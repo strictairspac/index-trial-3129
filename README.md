@@ -38,10 +38,18 @@ docker compose exec -T backend python -m scripts.seed_demo
 ## 算法与真实边界
 Python 对索引从左到右分析，匹配相等列每列 +40，首个时间范围列 +20 后停止，最高100。缺失首列停止。启发式不等于优化器成本。worker 使用 MySQL GET_LOCK 串行隔离，删除遗留试验索引 → 无候选基线 EXPLAIN/查询5次 → 建候选索引/ANALYZE → 查询5次和EXPLAIN → 校验有序全结果SHA-256 → 清理索引。数据固定、查询参数固定可复现，耗时受缓存和驱动波动影响，不保证提速。20 行写探针是真实 INSERT 后 ROLLBACK，可能消耗 auto_increment 序列号。试验只修改专用 telemetry 表，不能接受任意SQL或远端数据库。任务使用简单 Redis 单消费者，进程崩溃后的 running 任务不自动重试，保留状态供人工复查并新建任务。
 
+## 巡检小时汇总
+巡检可按现有负载时间范围（或显式 sensor_id+起止）查设备小时汇总：条数、最小/最大读数。原始记录存 `readings`（撤回为软删除），小时汇总存 `reading_hours`（cnt/min_v/max_v + 核对状态），回填断点存 `backfill_states`。
+
+- 写接口：`POST /readings` 录入（`client_ref` 幂等键，重试不重复计数）、`POST /readings/{id}/retract` 撤回（幂等）、`POST /readings/{id}/correct` 更正时间或读数、`POST /readings/backfill` 回填（batch 控制每批小时数，断点续跑，`restart` 重来）、`POST /readings/reconcile` 单小时核对。
+- 读接口：`GET /readings/summary`（workload_id 或 sensor_id+start_at+end_at）、`GET /readings` 原始记录、`GET /readings/hours` 汇总行与状态、`GET /readings/backfill` 回填进度。
+- 一致性：原始变更与汇总变更同事务提交，汇总行先 SELECT ... FOR UPDATE 加锁（跨小时更正按小时排序加锁）。晚到记录增量合并；撤回/更正触及极值时只重算受影响的小时（并列极值撤回一个后极值不变）。回填按小时整段重算、逐小时提交断点，中断后重试幂等；与并发写入靠同一行锁串行。
+- 读路由：仅 verified（核对一致）小时读汇总；pending 小时与首尾不足一小时的区间实时聚合原始记录，响应中按块标注 source。
+
 ## 技术与目录
 Python3.11 / FastAPI / SQLAlchemy / PyMySQL / Redis；MySQL8.0；原生 HTML CSS ES modules；nginx1.27。恰好五容器 frontend/backend/worker/db/redis，均有健康探针。数据库、Redis、应用产物各用命名卷。
 
-`backend/src` 按 models/schemas/services/controllers/routes/middlewares/config/constants/utils 分层；`backend/scripts/seed_demo.py`；`backend/migrations` 记录元数据建表版本。`frontend/src` 按 api/stores/pages/components/common/hooks/router/types/constants/utils 分层。截图、测试脚本及测试报告在批次根目录 `test-artifacts/gb-4102`，不放源码。
+`backend/src` 按 models/schemas/services/controllers/routes/middlewares/config/constants/utils 分层；`backend/scripts/seed_demo.py`；`backend/migrations` 记录元数据建表版本（002 为巡检小时汇总三表与一致性约定）。`frontend/src` 按 api/stores/pages/components/common/hooks/router/types/constants/utils 分层。截图、测试脚本及测试报告在批次根目录 `test-artifacts/gb-4102`，不放源码；验收脚本 `run_tests.py` 覆盖撤回并列极值、跨小时更正、回填续跑（含并发写入与重试幂等）与读路由切换，`report.md` 为最近一轮结果。
 
 共享枚举：角色和状态在 `backend/src/constants/enums.py` 与 `frontend/src/constants/enums.js`；服务/权限与前端状态组件使用一致枚举。前端共享 table/status/feedback；hooks forms/poll。双字体来自 Google Fonts（网络不可用时回退 sans-serif/monospace）。赭红工业试验纸视觉，支持桌面/平板/手机。
 

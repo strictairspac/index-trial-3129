@@ -1,6 +1,10 @@
 from pydantic import BaseModel,Field,model_validator
 from datetime import datetime
+import math
 from src.constants.enums import COLUMNS
+def _naive(ts):
+ a=datetime.fromisoformat(ts)
+ return a.replace(tzinfo=None).isoformat(timespec='seconds')
 class Login(BaseModel):
  email:str;password:str
 class WorkloadInput(BaseModel):
@@ -29,3 +33,41 @@ class CandidateInput(BaseModel):
 class ExperimentInput(BaseModel):
  name:str=Field(min_length=2,max_length=120)
  candidate_id:int
+class ReadingInput(BaseModel):
+ sensor_id:int=Field(ge=1,le=1000)
+ recorded_at:str
+ value:float
+ client_ref:str|None=Field(default=None,max_length=64)
+ @model_validator(mode='after')
+ def valid(self):
+  self.recorded_at=_naive(self.recorded_at)
+  if not math.isfinite(self.value):raise ValueError('读数必须是有限数值')
+  return self
+class CorrectInput(BaseModel):
+ recorded_at:str|None=None
+ value:float|None=None
+ @model_validator(mode='after')
+ def valid(self):
+  if self.recorded_at is None and self.value is None:raise ValueError('至少更正时间或读数之一')
+  if self.recorded_at is not None:self.recorded_at=_naive(self.recorded_at)
+  if self.value is not None and not math.isfinite(self.value):raise ValueError('读数必须是有限数值')
+  return self
+class BackfillInput(BaseModel):
+ sensor_id:int=Field(ge=1,le=1000)
+ start_at:str|None=None
+ end_at:str|None=None
+ batch:int=Field(default=24,ge=1,le=744)
+ restart:bool=False
+ @model_validator(mode='after')
+ def valid(self):
+  if self.start_at is not None:self.start_at=_naive(self.start_at)
+  if self.end_at is not None:self.end_at=_naive(self.end_at)
+  if self.start_at and self.end_at and self.start_at>=self.end_at:raise ValueError('结束时间必须晚于开始时间')
+  return self
+class ReconcileInput(BaseModel):
+ sensor_id:int=Field(ge=1,le=1000)
+ hour:str
+ @model_validator(mode='after')
+ def valid(self):
+  self.hour=_naive(self.hour)
+  return self
